@@ -93,7 +93,7 @@ const ChatMessage: React.FC<{ message: LiveVideoRoomMessage; isMe: boolean }> = 
         {!isMe && <img src={message.sender.avatarUrl} alt={message.sender.name} className="w-6 h-6 rounded-full mt-1" />}
         <div>
             {!isMe && <p className="text-xs text-slate-400 ml-2">{message.sender.name}</p>}
-            <div className={`px-3 py-1.5 rounded-2xl text-sm max-w-xs break-words ${isMe ? 'bg-fuchsia-600 text-white rounded-br-none' : 'bg-slate-700 text-slate-200 rounded-bl-none'}`}>
+            <div className={`px-3 py-1.5 rounded-2xl text-sm max-w-xs break-words ${isMe ? 'bg-fuchsia-600/70 text-white rounded-br-none' : 'bg-slate-700/70 text-slate-200 rounded-bl-none'}`}>
                 {message.text}
             </div>
         </div>
@@ -138,6 +138,27 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
 
 
     // --- Core Logic & Lifecycle Effects ---
+    const handleHangUp = useCallback(async () => {
+        const isHost = room?.host.id === currentUser.id;
+        if (isHost) {
+            if (window.confirm("End this call for everyone?")) {
+                await geminiService.endLiveVideoRoom(currentUser.id, roomId);
+                // The onSnapshot listener will trigger onGoBack for everyone, including the host.
+            }
+        } else {
+            // Participant is leaving explicitly. Clean up and then navigate back.
+            try {
+                localAudioTrack.current?.close();
+                localVideoTrack.current?.close();
+                await agoraClient.current?.leave();
+                await geminiService.leaveLiveVideoRoom(currentUser.id, roomId);
+            } catch (error) {
+                console.error("Error during manual leave:", error);
+            } finally {
+                onGoBack();
+            }
+        }
+    }, [room, currentUser.id, roomId, onGoBack]);
 
     useEffect(() => {
         let isMounted = true;
@@ -193,7 +214,7 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
             geminiService.leaveLiveVideoRoom(currentUser.id, roomId);
         };
     }, [roomId, currentUser.id, onGoBack]);
-
+    
     useEffect(() => {
         const unsubRoom = geminiService.listenToVideoRoom(roomId, liveRoom => liveRoom ? setRoom(liveRoom) : onGoBack());
         const unsubMessages = geminiService.listenToLiveVideoRoomMessages(roomId, setMessages);
@@ -264,8 +285,6 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
 
 
     // --- User Actions ---
-
-    const handleLeaveOrEnd = () => room?.host.id === currentUser.id ? (window.confirm("End this call for everyone?") && geminiService.endLiveVideoRoom(currentUser.id, roomId)) : onGoBack();
     const toggleMute = async () => { if (!isMicAvailable) return; const muted = !isMuted; await localAudioTrack.current?.setMuted(muted); setIsMuted(muted); await geminiService.updateParticipantStateInVideoRoom(roomId, currentUser.id, { isMuted: muted }); };
     const toggleCamera = async () => { if (!isCamAvailable) return; const camOff = !isCameraOff; await localVideoTrack.current?.setEnabled(!camOff); setIsCameraOff(camOff); await geminiService.updateParticipantStateInVideoRoom(roomId, currentUser.id, { isCameraOff: camOff }); };
     const handleSendMessage = async (e: React.FormEvent) => { e.preventDefault(); const trimmed = newMessage.trim(); if (trimmed) { await geminiService.sendLiveVideoRoomMessage(roomId, currentUser, trimmed); setNewMessage(''); } };
@@ -331,12 +350,12 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
                         <button onClick={(e) => {e.stopPropagation(); toggleMute();}} disabled={!isMicAvailable} className={`p-4 rounded-full transition-colors ${!isMicAvailable ? 'bg-red-600/50' : isMuted ? 'bg-rose-600' : 'bg-slate-700'}`}><Icon name={!isMicAvailable || isMuted ? 'microphone-slash' : 'mic'} className="w-6 h-6" /></button>
                         <button onClick={(e) => {e.stopPropagation(); toggleCamera();}} disabled={!isCamAvailable} className={`p-4 rounded-full transition-colors ${!isCamAvailable ? 'bg-red-600/50' : isCameraOff ? 'bg-rose-600' : 'bg-slate-700'}`}><Icon name={!isCamAvailable || isCameraOff ? 'video-camera-slash' : 'video-camera'} className="w-6 h-6" /></button>
                         <button onClick={(e) => { e.stopPropagation(); setIsChatOpen(p => !p); }} className="p-4 rounded-full bg-slate-700 md:hidden"><Icon name="message" className="w-6 h-6"/></button>
-                        <button onClick={(e) => {e.stopPropagation(); handleLeaveOrEnd();}} className="p-4 rounded-full bg-red-600"><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" transform="rotate(-135 12 12)"/></svg></button>
+                        <button onClick={(e) => {e.stopPropagation(); handleHangUp();}} className="p-4 rounded-full bg-red-600"><svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" transform="rotate(-135 12 12)"/></svg></button>
                     </div>
                 </div>
             </main>
             
-            <aside className={`w-full md:w-80 flex-shrink-0 bg-black/80 backdrop-blur-sm border-l border-white/10 flex flex-col z-40 transition-transform duration-300 ${isChatOpen ? (isMobile ? 'fixed inset-0 translate-x-0 animate-slide-in-right' : 'animate-slide-in-right') : (isMobile ? 'fixed inset-0 translate-x-full animate-slide-out-right' : 'hidden')}`}>
+            <aside className={`w-full md:w-80 flex-shrink-0 bg-black/60 backdrop-blur-sm border-l border-white/10 flex flex-col z-40 transition-transform duration-300 ${isChatOpen ? (isMobile ? 'fixed inset-0 translate-x-0 animate-slide-in-right' : 'animate-slide-in-right') : (isMobile ? 'fixed inset-0 translate-x-full animate-slide-out-right' : 'hidden')}`}>
                  <header className="p-3 flex-shrink-0 flex items-center justify-between border-b border-slate-700">
                     <h2 className="font-bold text-lg">Live Chat</h2>
                     <button onClick={() => setIsChatOpen(false)} className="p-2 rounded-full hover:bg-slate-700"><Icon name="close" className="w-5 h-5"/></button>

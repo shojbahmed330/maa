@@ -1,5 +1,5 @@
 {
-  "name": "working 24, calling without micrphone.  Notification for all comment, all comment show, remove crop, Notification working now exact post",
+  "name": "working 25, good video layout, calling without micrphone.  Notification for all comment, all comment show, remove crop, Notification working now exact post",
   "description": "A fully voice-controlled social media application where you can sign up, log in, navigate your feed, post audio, comment, and more, all using your voice. This implementation simulates the voice experience through a text-based command interface powered by the Gemini API.",
   "requestFramePermissions": [
     "microphone",
