@@ -36,6 +36,17 @@ const isJumboEmoji = (text: string | undefined): boolean => {
     return emojiCount > 0 && emojiCount <= 2;
 };
 
+function stringToIntegerHash(str: string): number {
+  if (!str) return 0;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
 interface LiveRoomScreenProps {
   currentUser: User;
   roomId: string;
@@ -210,7 +221,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
         const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
         agoraClient.current = client;
 
-        const uid = Math.floor(Math.random() * 1000000);
+        const uid = stringToIntegerHash(currentUser.id);
 
         const setupAgora = async () => {
             client.on('user-published', async (user, mediaType) => {
@@ -394,7 +405,17 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
                 <div className="flex-grow my-6 overflow-y-auto no-scrollbar">
                     <h2 className="text-lg font-bold text-slate-300 mb-4">Speakers</h2>
                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
-                        {room.speakers.map(speaker => <Avatar key={speaker.id} user={speaker} isHost={speaker.id === room.host.id} isSpeaking={activeSpeakerId === String(speaker.id)} />)}
+                        {room.speakers.map(speaker => {
+                             const speakerAgoraUid = stringToIntegerHash(speaker.id);
+                             return (
+                                 <Avatar
+                                     key={speaker.id}
+                                     user={speaker}
+                                     isHost={speaker.id === room.host.id}
+                                     isSpeaking={activeSpeakerId === String(speakerAgoraUid)}
+                                 />
+                             );
+                        })}
                     </div>
                     <h2 className="text-lg font-bold text-slate-300 mt-8 mb-4">Listeners ({room.listeners.length})</h2>
                     <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
