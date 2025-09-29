@@ -1,6 +1,4 @@
-
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-// FIX: Import the Author type to resolve the type mismatch in the Avatar component.
 import { AppView, LiveAudioRoom, User, LiveAudioRoomMessage, Author } from '../types';
 import { geminiService } from '../services/geminiService';
 import Icon from './Icon';
@@ -46,8 +44,6 @@ interface LiveRoomScreenProps {
   onSetTtsMessage: (message: string) => void;
 }
 
-// FIX: The Avatar component is used for both speakers and listeners, which are of type Author.
-// Changed the user prop from User to Author to match the data being passed.
 const Avatar: React.FC<{ user: Author; isHost?: boolean; isSpeaking?: boolean; children?: React.ReactNode }> = ({ user, isHost, isSpeaking, children }) => (
     <div className="relative flex flex-col items-center gap-2 text-center w-24">
         <div className="relative">
@@ -190,7 +186,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
     onSetTtsMessageRef.current = onSetTtsMessage;
 
     const handleHangUp = useCallback(async () => {
-        const isHost = room?.host.id === currentUser.id;
+        const isHost = room ? room.host.id === currentUser.id : false;
         const action = isHost ? geminiService.endLiveAudioRoom : geminiService.leaveLiveAudioRoom;
         
         try {
@@ -201,7 +197,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
             if (agoraClient.current) {
                 await agoraClient.current.leave();
             }
-            await action(currentUser.id, roomId);
+            await action(currentUser.id, roomId).catch(e => console.log('Action failed on hangup, likely expected:', e));
         } catch (error) {
             console.error("Error during hang up:", error);
         } finally {
@@ -335,12 +331,16 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
     };
 
     const handleEnableAudio = async () => {
+        try {
+            await AgoraRTC.getAudioContext().resume();
+            console.log('AudioContext resumed successfully on user gesture.');
+        } catch (e) {
+            console.error('Could not resume AudioContext:', e);
+        }
+
         const client = agoraClient.current;
         if (!client) return;
 
-        // Directly playing audio tracks from a user gesture is the most reliable
-        // way to deal with browser autoplay policies. This also implicitly
-        // resumes the AudioContext.
         try {
             await Promise.all(client.remoteUsers.map(user => {
                 if (user.hasAudio && !user.audioTrack?.isPlaying) {
@@ -349,10 +349,10 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
                 return Promise.resolve();
             }));
             
-            console.log("Audio enabled and remote tracks played on user gesture.");
+            console.log("Remote tracks played successfully on user gesture.");
             setIsAudioEnabled(true);
         } catch (e) {
-            console.error("Error playing remote audio on user gesture:", e);
+            console.error("Error playing remote audio tracks on user gesture:", e);
             alert("Could not enable audio. Your browser might be blocking it. Please try refreshing the page.");
         }
     };
