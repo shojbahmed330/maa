@@ -180,6 +180,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
     const agoraClient = useRef<IAgoraRTCClient | null>(null);
     const localAudioTrack = useRef<IMicrophoneAudioTrack | null>(null);
     const [isMuted, setIsMuted] = useState(false);
+    const [isJoined, setIsJoined] = useState(false);
     
     const [messages, setMessages] = useState<LiveAudioRoomMessage[]>([]);
     const [newMessage, setNewMessage] = useState('');
@@ -248,6 +249,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
             }
 
             await client.join(AGORA_APP_ID, roomId, token, uid);
+            setIsJoined(true);
         };
 
         geminiService.joinLiveAudioRoom(currentUser.id, roomId).then(setupAgora);
@@ -293,7 +295,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
     }, [messages]);
     
     useEffect(() => {
-        if (!room || !agoraClient.current) return;
+        if (!room || !agoraClient.current || !isJoined) return;
 
         const amISpeakerNow = room.speakers.some(s => s.id === currentUser.id);
         const wasISpeakerBefore = !!localAudioTrack.current;
@@ -327,7 +329,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
 
         handleRoleChange();
 
-    }, [room, currentUser.id]);
+    }, [room, currentUser.id, isJoined]);
 
     const handleLeave = () => onGoBack();
     
