@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 // FIX: Import the Author type to resolve the type mismatch in the Avatar component.
 import { AppView, LiveAudioRoom, User, LiveAudioRoomMessage, Author } from '../types';
@@ -181,358 +182,265 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
 
     const [isAudioEnabled, setIsAudioEnabled] = useState(false);
     const isAudioEnabledRef = useRef(isAudioEnabled);
+    isAudioEnabledRef.current = isAudioEnabled;
 
     const onGoBackRef = useRef(onGoBack);
+    onGoBackRef.current = onGoBack;
     const onSetTtsMessageRef = useRef(onSetTtsMessage);
+    onSetTtsMessageRef.current = onSetTtsMessage;
 
-    useEffect(() => {
-        isAudioEnabledRef.current = isAudioEnabled;
-    }, [isAudioEnabled]);
-
-    useEffect(() => {
-        onGoBackRef.current = onGoBack;
-        onSetTtsMessageRef.current = onSetTtsMessage;
-    });
-
-    useEffect(() => {
-        if (!AGORA_APP_ID) {
-            onSetTtsMessageRef.current("Agora App ID is not configured. Real-time audio will not work.");
-            console.error("Agora App ID is not configured in constants.ts");
+    const handleHangUp = useCallback(async () => {
+        const isHost = room?.host.id === currentUser.id;
+        const action = isHost ? geminiService.endLiveAudioRoom : geminiService.leaveLiveAudioRoom;
+        
+        try {
+            if (localAudioTrack.current) {
+                localAudioTrack.current.stop();
+                localAudioTrack.current.close();
+            }
+            if (agoraClient.current) {
+                await agoraClient.current.leave();
+            }
+            await action(currentUser.id, roomId);
+        } catch (error) {
+            console.error("Error during hang up:", error);
+        } finally {
             onGoBackRef.current();
-            return;
         }
+    }, [room, currentUser.id, roomId]);
 
+    useEffect(() => {
+        let isMounted = true;
         const client = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
         agoraClient.current = client;
 
-        const handleUserPublished = async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
-            await client.subscribe(user, mediaType);
-            if (mediaType === 'audio') {
-                if (isAudioEnabledRef.current) {
-                    user.audioTrack?.play().catch(e => console.error("Failed to play new user's audio", e));
-                }
-            }
-        };
+        const uid = Math.floor(Math.random() * 1000000);
 
-        const handleUserUnpublished = (user: IAgoraRTCRemoteUser) => {};
-        const handleUserLeft = (user: IAgoraRTCRemoteUser) => {};
-
-        const handleVolumeIndicator = (volumes: any[]) => {
-            if (volumes.length === 0) {
-                setActiveSpeakerId(null);
-                return;
-            };
-            const mainSpeaker = volumes.reduce((max, current) => current.level > max.level ? current : max);
-            if (mainSpeaker.level > 5) { // Threshold to avoid flickering
-                setActiveSpeakerId(mainSpeaker.uid.toString());
-            } else {
-                setActiveSpeakerId(null);
-            }
-        };
-        
         const setupAgora = async () => {
-            client.on('user-published', handleUserPublished);
-            client.on('user-unpublished', handleUserUnpublished);
-            client.on('user-left', handleUserLeft);
+            client.on('user-published', async (user, mediaType) => {
+                await client.subscribe(user, mediaType);
+                if (mediaType === 'audio') {
+                    if (isAudioEnabledRef.current) {
+                        user.audioTrack?.play();
+                    }
+                }
+            });
+            client.on('user-left', (user) => {
+                if (isMounted) {
+                    setActiveSpeakerId(prev => prev === String(user.uid) ? null : prev);
+                }
+            });
+            client.on('volume-indicator', volumes => {
+                if (!isMounted) return;
+                const mainSpeaker = volumes.reduce((max, current) => (current.level > max.level ? current : max), volumes[0]);
+                if (mainSpeaker && mainSpeaker.level > 10) {
+                    setActiveSpeakerId(String(mainSpeaker.uid));
+                } else {
+                    setActiveSpeakerId(null);
+                }
+            });
             client.enableAudioVolumeIndicator();
-            client.on('volume-indicator', handleVolumeIndicator);
-            
-            const uid = parseInt(currentUser.id, 36) % 10000000;
-            
+
             const token = await geminiService.getAgoraToken(roomId, uid);
             if (!token) {
-                console.error("Failed to retrieve Agora token. Cannot join room.");
-                onSetTtsMessageRef.current("Could not join the room due to a connection issue.");
-                onGoBackRef.current();
+                onSetTtsMessageRef.current("Failed to join room: Could not get authentication token.");
+                handleHangUp();
                 return;
             }
 
             await client.join(AGORA_APP_ID, roomId, token, uid);
+
+            try {
+                localAudioTrack.current = await AgoraRTC.createMicrophoneAudioTrack();
+                await client.publish(localAudioTrack.current);
+            } catch (err) {
+                console.warn("Could not get mic, joining as listener.", err);
+                onSetTtsMessageRef.current("Microphone not found or permission denied. You've joined as a listener.");
+                setIsMuted(true);
+            }
         };
 
-        geminiService.joinLiveAudioRoom(currentUser.id, roomId).then(setupAgora);
+        geminiService.joinLiveAudioRoom(currentUser.id, roomId)
+            .then(() => {
+                if (isMounted) setupAgora();
+            })
+            .catch(error => {
+                console.error("Failed to join or setup Agora:", error);
+                handleHangUp();
+            });
 
         return () => {
-            client.off('user-published', handleUserPublished);
-            client.off('user-unpublished', handleUserUnpublished);
-            client.off('user-left', handleUserLeft);
-            client.off('volume-indicator', handleVolumeIndicator);
-
-            if (localAudioTrack.current) {
-                localAudioTrack.current.stop();
-                localAudioTrack.current.close();
-                localAudioTrack.current = null;
-            }
-            agoraClient.current?.leave();
-            geminiService.leaveLiveAudioRoom(currentUser.id, roomId);
+            isMounted = false;
+            handleHangUp();
         };
-    }, [roomId, currentUser.id]);
-    
+    }, [roomId, currentUser.id, handleHangUp]);
+
     useEffect(() => {
-        setIsLoading(true);
-        const unsubscribe = geminiService.listenToAudioRoom(roomId, (roomDetails) => {
-            if (roomDetails && roomDetails.status === 'live') {
-                setRoom(roomDetails);
+        const unsubscribe = geminiService.listenToAudioRoom(roomId, (liveRoom) => {
+            if (liveRoom) {
+                setRoom(liveRoom);
+                setIsLoading(false);
             } else {
-                onSetTtsMessageRef.current("The room has ended.");
-                onGoBackRef.current();
+                onGoBack();
             }
-            setIsLoading(false);
         });
+        const unsubscribeMessages = geminiService.listenToLiveAudioRoomMessages(roomId, setMessages);
 
-        return () => unsubscribe();
-    }, [roomId]);
-
-    useEffect(() => {
-        const unsubscribe = geminiService.listenToLiveAudioRoomMessages(roomId, setMessages);
-        return () => unsubscribe();
-    }, [roomId]);
+        return () => {
+            unsubscribe();
+            unsubscribeMessages();
+        };
+    }, [roomId, onGoBack]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages]);
-    
-    useEffect(() => {
-        if (!room || !agoraClient.current) return;
 
-        const amISpeakerNow = room.speakers.some(s => s.id === currentUser.id);
-        const wasISpeakerBefore = !!localAudioTrack.current;
-
-        const handleRoleChange = async () => {
-            if (amISpeakerNow && !wasISpeakerBefore) {
-                try {
-                    const track = await AgoraRTC.createMicrophoneAudioTrack();
-                    localAudioTrack.current = track;
-                    await agoraClient.current?.publish(track);
-                    track.setMuted(false);
-                    setIsMuted(false);
-                } catch (error) {
-                    console.error("Error creating/publishing audio track:", error);
-                    onSetTtsMessageRef.current("Could not activate microphone.");
-                }
-            }
-            else if (!amISpeakerNow && wasISpeakerBefore) {
-                try {
-                    if (localAudioTrack.current) {
-                        await agoraClient.current?.unpublish([localAudioTrack.current]);
-                        localAudioTrack.current.stop();
-                        localAudioTrack.current.close();
-                        localAudioTrack.current = null;
-                    }
-                } catch (error) {
-                    console.error("Error unpublishing audio track:", error);
-                }
-            }
-        };
-
-        handleRoleChange();
-
-    }, [room, currentUser.id]);
-
-    const handleLeave = () => onGoBack();
-    
-    const handleEndRoom = () => {
-        if (window.confirm('Are you sure you want to end this room for everyone?')) {
-            geminiService.endLiveAudioRoom(currentUser.id, roomId);
-        }
-    };
-    
-    const toggleMute = () => {
-        if (localAudioTrack.current) {
-            const willBeMuted = !isMuted;
-            localAudioTrack.current.setMuted(willBeMuted);
-            setIsMuted(willBeMuted);
-        }
-    };
-
-    const handleRaiseHand = () => geminiService.raiseHandInAudioRoom(currentUser.id, roomId);
-    const handleInviteToSpeak = (userId: string) => geminiService.inviteToSpeakInAudioRoom(currentUser.id, userId, roomId);
-    const handleMoveToAudience = (userId: string) => geminiService.moveToAudienceInAudioRoom(currentUser.id, userId, roomId);
-
-    const isHost = room?.host.id === currentUser.id;
-    const isSpeaker = room?.speakers.some(s => s.id === currentUser.id) ?? false;
-    
     const handleSendMessage = async (e: React.FormEvent) => {
         e.preventDefault();
         const trimmedMessage = newMessage.trim();
-        if (trimmedMessage === '' || !room) return;
-        
-        if (trimmedMessage === '❤️' || trimmedMessage === '😍') {
-            setShowHeartAnimation(true);
-            setTimeout(() => setShowHeartAnimation(false), 3000);
-        }
+        if (!trimmedMessage || !room) return;
 
-        try {
-            await geminiService.sendLiveAudioRoomMessage(roomId, currentUser, trimmedMessage, !!isHost, isSpeaker);
-            setNewMessage('');
-            setEmojiPickerOpen(false);
-        } catch (error) {
-            console.error("Failed to send message:", error);
-            onSetTtsMessage("Could not send message.");
-        }
+        const isHost = room.host.id === currentUser.id;
+        const isSpeaker = room.speakers.some(s => s.id === currentUser.id);
+
+        await geminiService.sendLiveAudioRoomMessage(roomId, currentUser, trimmedMessage, isHost, isSpeaker);
+        setNewMessage('');
     };
     
-    const handleReact = (messageId: string, emoji: string) => {
+    const handleReactToMessage = (messageId: string, emoji: string) => {
         geminiService.reactToLiveAudioRoomMessage(roomId, messageId, currentUser.id, emoji);
     };
-    
-    const enableAudio = async () => {
-        if (agoraClient.current) {
-            await AgoraRTC.resumeAudioContext();
-            agoraClient.current.remoteUsers.forEach(user => {
-                if (user.audioTrack && !user.audioTrack.isPlaying) {
-                    user.audioTrack.play().catch(e => console.error("Failed to play remote audio for user", user.uid, e));
-                }
-            });
-        }
-        setIsAudioEnabled(true);
+
+    const handleSendEmoji = async (emoji: string) => {
+         if (!room) return;
+        const isHost = room.host.id === currentUser.id;
+        const isSpeaker = room.speakers.some(s => s.id === currentUser.id);
+
+        await geminiService.sendLiveAudioRoomMessage(roomId, currentUser, emoji, isHost, isSpeaker);
     };
 
-    if (!isAudioEnabled && !isLoading) {
-        return (
-            <div className="fixed inset-0 bg-slate-900 z-50 flex flex-col items-center justify-center p-4">
-                <div className="text-center">
-                    <Icon name="speaker-wave" className="w-24 h-24 text-lime-400 mx-auto mb-6" />
-                    <h2 className="text-3xl font-bold text-white mb-4">Join Audio</h2>
-                    <p className="text-slate-400 mb-8 max-w-sm">Tap the button to enable audio and start listening to the conversation.</p>
+    const handleToggleMute = () => {
+        if (localAudioTrack.current) {
+            const muted = !isMuted;
+            localAudioTrack.current.setMuted(muted);
+            setIsMuted(muted);
+        }
+    };
+    
+    const handleHeartClick = () => {
+        setShowHeartAnimation(true);
+        setTimeout(() => setShowHeartAnimation(false), 2500);
+        handleSendEmoji('❤️');
+    };
+
+    const handleEnableAudio = async () => {
+        const client = agoraClient.current;
+        if (!client) return;
+
+        // Directly playing audio tracks from a user gesture is the most reliable
+        // way to deal with browser autoplay policies. This also implicitly
+        // resumes the AudioContext.
+        try {
+            await Promise.all(client.remoteUsers.map(user => {
+                if (user.hasAudio && !user.audioTrack?.isPlaying) {
+                    return user.audioTrack?.play();
+                }
+                return Promise.resolve();
+            }));
+            
+            console.log("Audio enabled and remote tracks played on user gesture.");
+            setIsAudioEnabled(true);
+        } catch (e) {
+            console.error("Error playing remote audio on user gesture:", e);
+            alert("Could not enable audio. Your browser might be blocking it. Please try refreshing the page.");
+        }
+    };
+
+    if (isLoading || !room) {
+        return <div className="h-full w-full flex items-center justify-center bg-black text-white">Joining room...</div>;
+    }
+
+    const isHost = room.host.id === currentUser.id;
+    const isSpeaker = room.speakers.some(s => s.id === currentUser.id);
+    const isListener = !isSpeaker;
+
+    return (
+        <div className="h-full w-full flex flex-col md:flex-row bg-gradient-to-br from-slate-900 via-indigo-900 to-black text-white overflow-hidden">
+            {!isAudioEnabled && (
+                <div className="absolute inset-0 bg-black/80 z-40 flex flex-col items-center justify-center gap-4 p-4 text-center">
+                    <h2 className="text-2xl font-bold">Audio is Disabled</h2>
+                    <p className="text-slate-300 max-w-sm">To hear others, you need to enable audio playback in your browser. This is required due to browser auto-play policies.</p>
                     <button
-                        onClick={enableAudio}
-                        className="bg-lime-600 hover:bg-lime-500 text-black font-bold py-4 px-8 rounded-full text-lg transition-transform hover:scale-105"
+                        onClick={handleEnableAudio}
+                        className="bg-lime-600 hover:bg-lime-500 text-black font-bold py-3 px-6 rounded-lg text-lg"
                     >
-                        <Icon name="mic" className="w-6 h-6 inline-block mr-2" />
                         Enable Audio
                     </button>
                 </div>
-            </div>
-        );
-    }
-
-    if (isLoading || !room) {
-        return <div className="h-full w-full flex items-center justify-center bg-slate-900 text-white">Loading Room...</div>;
-    }
-    
-    const isListener = !isSpeaker;
-    const hasRaisedHand = room.raisedHands.includes(currentUser.id);
-    const raisedHandUsers = room.listeners.filter(u => room.raisedHands.includes(u.id));
-
-    const speakerIdMap = new Map<string, string>();
-    room.speakers.forEach(s => {
-        const agoraUID = (parseInt(s.id, 36) % 10000000).toString();
-        speakerIdMap.set(agoraUID, s.id);
-    });
-
-    const activeAppSpeakerId = activeSpeakerId ? speakerIdMap.get(activeSpeakerId) : null;
-
-    return (
-        <div className="h-full w-full flex flex-col bg-slate-900 text-white overflow-hidden">
-             <header className="flex-shrink-0 p-4 flex items-center bg-black/20 z-20 border-b border-fuchsia-500/10">
-                <button onClick={onGoBack} className="p-2 rounded-full hover:bg-slate-700/50 mr-2" aria-label="Go Back">
-                    <Icon name="back" className="w-6 h-6" />
-                </button>
-                <div className="flex-grow">
-                    <h1 className="text-xl font-bold truncate">{room.topic}</h1>
-                    <p className="text-sm text-slate-400">with {room.host.name}</p>
-                </div>
-                {isHost && 
-                    <button onClick={handleEndRoom} className="bg-red-600 hover:bg-red-500 font-bold py-2 px-4 rounded-lg text-sm">
-                        End Room
+            )}
+            <main className="flex-grow p-6 flex flex-col">
+                <header className="flex-shrink-0 flex justify-between items-center">
+                    <div>
+                        <h1 className="text-2xl font-bold">{room.topic}</h1>
+                        <p className="text-slate-400">with {room.host.name}</p>
+                    </div>
+                    <button onClick={handleHangUp} className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-5 rounded-lg flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" transform="rotate(-135 12 12)"/></svg>
+                        <span>Leave</span>
                     </button>
-                }
-            </header>
+                </header>
 
-            <div className="flex-grow flex flex-col overflow-hidden">
-                <div className="flex-shrink-0 overflow-y-auto p-6 space-y-6 max-h-[40vh] md:max-h-[35vh] no-scrollbar">
-                     <section>
-                        <h2 className="text-lg font-semibold text-slate-300 mb-4">Speakers ({room.speakers.length})</h2>
-                        <div className="flex flex-wrap gap-6">
-                            {room.speakers.map(speaker => (
-                                <Avatar key={speaker.id} user={speaker} isHost={speaker.id === room.host.id} isSpeaking={speaker.id === activeAppSpeakerId}>
-                                    {isHost && speaker.id !== currentUser.id && (
-                                        <button onClick={() => handleMoveToAudience(speaker.id)} className="text-xs text-red-400 hover:underline">Move to Audience</button>
-                                    )}
-                                </Avatar>
-                            ))}
-                        </div>
-                    </section>
-                     {isHost && raisedHandUsers.length > 0 && (
-                        <section>
-                            <h2 className="text-lg font-semibold text-green-400 mb-4">Requests to Speak ({raisedHandUsers.length})</h2>
-                            <div className="flex flex-wrap gap-6 bg-slate-800/50 p-4 rounded-lg">
-                            {raisedHandUsers.map(user => (
-                                    <Avatar key={user.id} user={user}>
-                                        <button onClick={() => handleInviteToSpeak(user.id)} className="text-xs bg-green-500 text-white px-2 py-1 rounded-md font-semibold">Invite</button>
-                                    </Avatar>
-                            ))}
-                            </div>
-                        </section>
+                <div className="flex-grow my-6 overflow-y-auto no-scrollbar">
+                    <h2 className="text-lg font-bold text-slate-300 mb-4">Speakers</h2>
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
+                        {room.speakers.map(speaker => <Avatar key={speaker.id} user={speaker} isHost={speaker.id === room.host.id} isSpeaking={activeSpeakerId === String(speaker.id)} />)}
+                    </div>
+                    <h2 className="text-lg font-bold text-slate-300 mt-8 mb-4">Listeners ({room.listeners.length})</h2>
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-4">
+                        {room.listeners.map(listener => <Avatar key={listener.id} user={listener} />)}
+                    </div>
+                </div>
+
+                <footer className="flex-shrink-0 flex items-center justify-center gap-4">
+                     {isSpeaker && (
+                        <button onClick={handleToggleMute} className={`p-4 rounded-full transition-colors ${isMuted ? 'bg-rose-600' : 'bg-slate-700'}`}>
+                            <Icon name={isMuted ? 'microphone-slash' : 'mic'} className="w-6 h-6" />
+                        </button>
                     )}
-                    <section>
-                        <h2 className="text-lg font-semibold text-slate-300 mb-4">Listeners ({room.listeners.length})</h2>
-                        <div className="flex flex-wrap gap-4">
-                            {room.listeners.map(listener => (
-                                <div key={listener.id} className="relative" title={listener.name}>
-                                    <img src={listener.avatarUrl} alt={listener.name} className="w-12 h-12 rounded-full" />
-                                    {room.raisedHands.includes(listener.id) && (
-                                        <div className="absolute -bottom-1 -right-1 text-xl bg-slate-700 p-0.5 rounded-full">✋</div>
-                                    )}
-                                </div>
-                            ))}
-                        </div>
-                    </section>
-                </div>
-
-                <div className="relative flex-grow p-4 overflow-y-auto space-y-4 z-10">
+                </footer>
+            </main>
+            <aside className="w-full md:w-80 lg:w-96 flex-shrink-0 bg-black/40 backdrop-blur-sm border-t md:border-t-0 md:border-l border-white/10 flex flex-col">
+                 <div className="flex-grow p-3 overflow-y-auto space-y-3 no-scrollbar relative">
                     {showHeartAnimation && <HeartAnimation />}
-                    {messages.map(msg => (
-                        <ChatMessage key={msg.id} message={msg} activeSpeakerId={activeAppSpeakerId} isMe={msg.sender.id === currentUser.id} onReact={handleReact} />
-                    ))}
+                    {messages.map(msg => <ChatMessage key={msg.id} message={msg} isMe={msg.sender.id === currentUser.id} activeSpeakerId={activeSpeakerId} onReact={handleReactToMessage}/>)}
                     <div ref={messagesEndRef} />
-                </div>
-            </div>
-            
-            <footer className="relative p-2 flex-shrink-0 border-t border-slate-700 bg-black/30 z-10">
-                {isEmojiPickerOpen && (
-                    <div className="absolute bottom-full left-0 right-0 p-2 bg-slate-900/95 backdrop-blur-sm rounded-t-lg border-t border-x border-slate-700 h-64 overflow-y-auto no-scrollbar">
-                        <div className="grid grid-cols-8 gap-2">
-                            {EMOJI_LIST.map(emoji => (
-                                <button key={emoji} type="button" onClick={() => setNewMessage(prev => prev + emoji)} className="text-2xl p-1 rounded-md hover:bg-slate-700/50 transition-colors">
-                                    {emoji}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                )}
-                <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                    <div className="flex items-center gap-1">
-                        {isListener && (
-                            <button type="button" onClick={handleRaiseHand} disabled={hasRaisedHand} className="p-3 rounded-full bg-slate-600 disabled:bg-slate-700 disabled:text-slate-500">
-                                <span className="text-xl">✋</span>
-                            </button>
-                        )}
-                        {isSpeaker && (
-                            <button type="button" onClick={toggleMute} className={`p-3 rounded-full transition-colors ${isMuted ? 'bg-red-600' : 'bg-slate-600'}`}>
-                                <Icon name={isMuted ? 'microphone-slash' : 'mic'} className="w-5 h-5" />
-                            </button>
-                        )}
-                    </div>
-                    <div className="relative flex-grow">
-                        <input
+                 </div>
+                 <div className="relative p-2 border-t border-slate-700 bg-black/30">
+                     <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+                         <button type="button" onClick={() => setEmojiPickerOpen(p => !p)} className="p-2 rounded-full hover:bg-slate-700/50 text-slate-300">
+                             <Icon name="face-smile" className="w-6 h-6"/>
+                         </button>
+                         <input
                             type="text"
                             value={newMessage}
                             onChange={(e) => setNewMessage(e.target.value)}
-                            onFocus={() => setEmojiPickerOpen(false)}
                             placeholder="Send a message..."
-                            className="w-full bg-slate-700 border border-slate-600 rounded-full py-2 px-4 text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-lime-500"
-                        />
-                        <button type="button" onClick={() => setEmojiPickerOpen(p => !p)} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-300 hover:text-white">
-                            <Icon name="face-smile" className="w-5 h-5"/>
-                        </button>
-                    </div>
-                    <button type="submit" className="p-2.5 bg-lime-600 rounded-full text-black hover:bg-lime-500 transition-colors disabled:bg-slate-500" disabled={!newMessage.trim()}>
-                        <Icon name="paper-airplane" className="w-5 h-5" />
-                    </button>
-                </form>
-            </footer>
+                            className="w-full bg-slate-700/80 border border-slate-600 rounded-full py-2 px-4 text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                         />
+                         <button type="button" onClick={handleHeartClick} className="p-2 rounded-full hover:bg-slate-700/50 text-2xl">❤️</button>
+                     </form>
+                     {isEmojiPickerOpen && (
+                        <div className="absolute bottom-full mb-2 left-2 right-2 h-48 overflow-y-auto p-2 bg-slate-900/90 backdrop-blur-sm border border-slate-600 rounded-lg no-scrollbar">
+                           <div className="grid grid-cols-8 gap-1">
+                                {EMOJI_LIST.map(emoji => (
+                                    <button key={emoji} onClick={() => { handleSendEmoji(emoji); setEmojiPickerOpen(false);}} className="text-2xl p-1 aspect-square rounded-md hover:bg-slate-700/50">{emoji}</button>
+                                ))}
+                           </div>
+                        </div>
+                     )}
+                 </div>
+            </aside>
         </div>
     );
 };
