@@ -911,18 +911,20 @@ const UserApp: React.FC = () => {
 
   const handleNavigation = (viewName: 'feed' | 'explore' | 'reels' | 'friends' | 'settings' | 'profile' | 'messages' | 'ads_center' | 'rooms' | 'groups' | 'menu') => {
     setNotificationPanelOpen(false);
+    // FIX: Using setViewStack for top-level navigation items ensures the navigation stack doesn't grow unexpectedly.
+    // This provides a stable, predictable UI experience and prevents flickering.
     switch(viewName) {
         case 'feed': setViewStack([{ view: AppView.FEED }]); break;
         case 'explore': setViewStack([{ view: AppView.EXPLORE }]); break;
         case 'reels': setViewStack([{ view: AppView.REELS }]); break;
-        case 'friends': navigate(AppView.FRIENDS); break;
-        case 'settings': navigate(AppView.SETTINGS); break;
+        case 'friends': setViewStack([{ view: AppView.FRIENDS }]); break;
+        case 'settings': navigate(AppView.SETTINGS); break; // navigate is ok here as it's not a main tab
         case 'profile': if (user) navigate(AppView.PROFILE, { username: user.username }); break;
-        case 'messages': navigate(AppView.CONVERSATIONS); break;
-        case 'ads_center': navigate(AppView.ADS_CENTER); break;
-        case 'rooms': navigate(AppView.ROOMS_HUB); break;
-        case 'groups': navigate(AppView.GROUPS_HUB); break;
-        case 'menu': navigate(AppView.MOBILE_MENU); break;
+        case 'messages': setViewStack([{ view: AppView.CONVERSATIONS }]); break;
+        case 'ads_center': setViewStack([{ view: AppView.ADS_CENTER }]); break;
+        case 'rooms': setViewStack([{ view: AppView.ROOMS_HUB }]); break;
+        case 'groups': setViewStack([{ view: AppView.GROUPS_HUB }]); break;
+        case 'menu': navigate(AppView.MOBILE_MENU); break; // navigate is ok here as it opens an overlay
     }
   }
   
