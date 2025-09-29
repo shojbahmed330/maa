@@ -179,8 +179,15 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
     const [isEmojiPickerOpen, setEmojiPickerOpen] = useState(false);
     const [showHeartAnimation, setShowHeartAnimation] = useState(false);
 
+    const [isAudioEnabled, setIsAudioEnabled] = useState(false);
+    const isAudioEnabledRef = useRef(isAudioEnabled);
+
     const onGoBackRef = useRef(onGoBack);
     const onSetTtsMessageRef = useRef(onSetTtsMessage);
+
+    useEffect(() => {
+        isAudioEnabledRef.current = isAudioEnabled;
+    }, [isAudioEnabled]);
 
     useEffect(() => {
         onGoBackRef.current = onGoBack;
@@ -201,7 +208,9 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
         const handleUserPublished = async (user: IAgoraRTCRemoteUser, mediaType: 'audio' | 'video') => {
             await client.subscribe(user, mediaType);
             if (mediaType === 'audio') {
-                user.audioTrack?.play();
+                if (isAudioEnabledRef.current) {
+                    user.audioTrack?.play().catch(e => console.error("Failed to play new user's audio", e));
+                }
             }
         };
 
@@ -366,6 +375,37 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
     const handleReact = (messageId: string, emoji: string) => {
         geminiService.reactToLiveAudioRoomMessage(roomId, messageId, currentUser.id, emoji);
     };
+    
+    const enableAudio = async () => {
+        if (agoraClient.current) {
+            await AgoraRTC.resumeAudioContext();
+            agoraClient.current.remoteUsers.forEach(user => {
+                if (user.audioTrack && !user.audioTrack.isPlaying) {
+                    user.audioTrack.play().catch(e => console.error("Failed to play remote audio for user", user.uid, e));
+                }
+            });
+        }
+        setIsAudioEnabled(true);
+    };
+
+    if (!isAudioEnabled && !isLoading) {
+        return (
+            <div className="fixed inset-0 bg-slate-900 z-50 flex flex-col items-center justify-center p-4">
+                <div className="text-center">
+                    <Icon name="speaker-wave" className="w-24 h-24 text-lime-400 mx-auto mb-6" />
+                    <h2 className="text-3xl font-bold text-white mb-4">Join Audio</h2>
+                    <p className="text-slate-400 mb-8 max-w-sm">Tap the button to enable audio and start listening to the conversation.</p>
+                    <button
+                        onClick={enableAudio}
+                        className="bg-lime-600 hover:bg-lime-500 text-black font-bold py-4 px-8 rounded-full text-lg transition-transform hover:scale-105"
+                    >
+                        <Icon name="mic" className="w-6 h-6 inline-block mr-2" />
+                        Enable Audio
+                    </button>
+                </div>
+            </div>
+        );
+    }
 
     if (isLoading || !room) {
         return <div className="h-full w-full flex items-center justify-center bg-slate-900 text-white">Loading Room...</div>;
