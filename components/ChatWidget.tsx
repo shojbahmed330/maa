@@ -204,7 +204,6 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ currentUser, peerUser, onClose,
   const [audioPreview, setAudioPreview] = useState<{ url: string, blob: Blob, duration: number } | null>(null);
   
   const [settings, setSettings] = useState<ChatSettings>({ theme: 'default' });
-  const [isLoaded, setIsLoaded] = useState(false); // New state for fade-in effect
   const [isThemePickerOpen, setThemePickerOpen] = useState(false);
   const [isEmojiPickerOpen, setEmojiPickerOpen] = useState(false);
 
@@ -224,18 +223,17 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ currentUser, peerUser, onClose,
   }, [recordingState, setIsChatRecording]);
 
   useEffect(() => {
-    const unsubscribeMessages = firebaseService.listenToMessages(chatId, setMessages);
+    const unsubscribe = firebaseService.listenToMessages(chatId, setMessages);
     const unsubscribeSettings = firebaseService.listenToChatSettings(chatId, (newSettings) => {
         if (newSettings) {
             setSettings(newSettings);
         } else {
             setSettings({ theme: 'default' });
         }
-        setIsLoaded(true); // Set loaded after settings are fetched
     });
 
     return () => {
-        unsubscribeMessages();
+        unsubscribe();
         unsubscribeSettings();
     };
   }, [chatId]);
@@ -355,7 +353,7 @@ const ChatWidget: React.FC<ChatWidgetProps> = ({ currentUser, peerUser, onClose,
   const backgroundClass = activeTheme.bgClass || `bg-gradient-to-br ${activeTheme.bgGradient}`;
 
   return (
-    <div className={`fixed md:relative bottom-0 left-0 right-0 h-full md:w-80 md:h-[500px] ${backgroundClass} md:rounded-t-lg flex flex-col shadow-2xl border border-b-0 border-slate-700 font-sans transition-opacity duration-300 ${isLoaded ? 'opacity-100' : 'opacity-0'}`}>
+    <div className={`fixed md:relative bottom-0 left-0 right-0 h-full md:w-80 md:h-[500px] ${backgroundClass} md:rounded-t-lg flex flex-col shadow-2xl border border-b-0 border-slate-700 font-sans`}>
         {isThemePickerOpen && (
               <div className="absolute top-14 right-2 mt-1 w-64 bg-slate-800/90 backdrop-blur-md border border-slate-600 rounded-lg shadow-2xl z-30 p-2 animate-fade-in-fast">
                   <div className="grid grid-cols-5 gap-2">
