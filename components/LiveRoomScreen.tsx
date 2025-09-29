@@ -45,6 +45,17 @@ interface LiveRoomScreenProps {
   onSetTtsMessage: (message: string) => void;
 }
 
+function stringToIntegerHash(str: string): number {
+  if (!str) return 0;
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
 // FIX: The Avatar component is used for both speakers and listeners, which are of type Author.
 // Changed the user prop from User to Author to match the data being passed.
 const Avatar: React.FC<{ user: Author; isHost?: boolean; isSpeaking?: boolean; children?: React.ReactNode }> = ({ user, isHost, isSpeaking, children }) => (
@@ -228,7 +239,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
             client.enableAudioVolumeIndicator();
             client.on('volume-indicator', handleVolumeIndicator);
             
-            const uid = parseInt(currentUser.id, 36) % 10000000;
+            const uid = stringToIntegerHash(currentUser.id);
             
             const token = await geminiService.getAgoraToken(roomId, uid);
             if (!token) {
@@ -294,7 +305,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
                 try {
                     const track = await AgoraRTC.createMicrophoneAudioTrack();
                     localAudioTrack.current = track;
-                    await agoraClient.current?.publish(track);
+                    await agoraClient.current?.publish([track]);
                     track.setMuted(false);
                     setIsMuted(false);
                 } catch (error) {
@@ -377,7 +388,7 @@ const LiveRoomScreen: React.FC<LiveRoomScreenProps> = ({ currentUser, roomId, on
 
     const speakerIdMap = new Map<string, string>();
     room.speakers.forEach(s => {
-        const agoraUID = (parseInt(s.id, 36) % 10000000).toString();
+        const agoraUID = stringToIntegerHash(s.id).toString();
         speakerIdMap.set(agoraUID, s.id);
     });
 
