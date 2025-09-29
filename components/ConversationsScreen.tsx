@@ -103,14 +103,19 @@ const ConversationsScreen: React.FC<ConversationsScreenProps> = ({ currentUser, 
     setIsLoading(true);
     const unsubscribe = firebaseService.listenToConversations(currentUser.id, (convos) => {
         setConversations(convos);
-        if (isLoading) {
-             onSetTtsMessage(getTtsPrompt('conversations_loaded', language));
-             setIsLoading(false);
-        }
+        // This state update pattern ensures the TTS message is only sent once
+        // after the initial load, preventing it from re-triggering on subsequent data updates.
+        setIsLoading(wasLoading => {
+            if (wasLoading) {
+                onSetTtsMessage(getTtsPrompt('conversations_loaded', language));
+                return false; // Transition from loading to not loading
+            }
+            return false; // Already loaded, remain not loading
+        });
     });
 
     return () => unsubscribe();
-  }, [currentUser.id, onSetTtsMessage, language, isLoading]);
+  }, [currentUser.id, onSetTtsMessage, language]);
 
 
   const handleCommand = useCallback(async (command: string) => {
