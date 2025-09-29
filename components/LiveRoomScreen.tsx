@@ -1,5 +1,5 @@
+
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-// FIX: Import the Author type to resolve the type mismatch in the Avatar component.
 import { AppView, LiveAudioRoom, User, LiveAudioRoomMessage, Author } from '../types';
 import { geminiService } from '../services/geminiService';
 import Icon from './Icon';
@@ -56,8 +56,6 @@ function stringToIntegerHash(str: string): number {
   return Math.abs(hash);
 }
 
-// FIX: The Avatar component is used for both speakers and listeners, which are of type Author.
-// Changed the user prop from User to Author to match the data being passed.
 const Avatar: React.FC<{ user: Author; isHost?: boolean; isSpeaking?: boolean; children?: React.ReactNode }> = ({ user, isHost, isSpeaking, children }) => (
     <div className="relative flex flex-col items-center gap-2 text-center w-24">
         <div className="relative">
