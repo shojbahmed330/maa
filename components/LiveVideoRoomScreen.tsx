@@ -93,8 +93,8 @@ const ChatMessage: React.FC<{ message: LiveVideoRoomMessage; isMe: boolean }> = 
         {!isMe && <img src={message.sender.avatarUrl} alt={message.sender.name} className="w-6 h-6 rounded-full mt-1" />}
         <div>
             {!isMe && <p className="text-xs text-slate-400 ml-2">{message.sender.name}</p>}
-            <div className={`px-3 py-1.5 rounded-2xl text-sm max-w-xs break-words ${isMe ? 'bg-fuchsia-600/70 text-white rounded-br-none' : 'bg-slate-700/70 text-slate-200 rounded-bl-none'}`}>
-                {message.text}
+            <div className={`px-3 py-1.5 rounded-2xl text-sm max-w-xs break-words ${isMe ? 'bg-fuchsia-600/50 text-white rounded-br-none' : 'bg-slate-800/50 text-slate-200 rounded-bl-none'}`}>
+                 <p className="[text-shadow:0_1px_2px_rgba(0,0,0,0.8)]">{message.text}</p>
             </div>
         </div>
     </div>
@@ -132,21 +132,33 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
     const isMobile = useIsMobile();
     const [isChatOpen, setIsChatOpen] = useState(!isMobile);
 
-    const [pipPosition, setPipPosition] = useState({ x: 16, y: 16 });
-    const pipRef = useRef<HTMLDivElement>(null);
-    const dragInfo = useRef({ isDragging: false, startX: 0, startY: 0, hasDragged: false });
+    const mainContainerRef = useRef<HTMLDivElement>(null);
+    const [participantPositions, setParticipantPositions] = useState<Record<string, { x: number, y: number }>>({});
+    const dragInfo = useRef<{ isDragging: boolean, targetId: string | null, startX: number, startY: number, hasDragged: boolean }>({ isDragging: false, targetId: null, startX: 0, startY: 0, hasDragged: false });
 
 
     // --- Core Logic & Lifecycle Effects ---
     const handleHangUp = useCallback(async () => {
         const isHost = room?.host.id === currentUser.id;
+    
         if (isHost) {
             if (window.confirm("End this call for everyone?")) {
-                await geminiService.endLiveVideoRoom(currentUser.id, roomId);
-                // The onSnapshot listener will trigger onGoBack for everyone, including the host.
+                try {
+                    // Tell the server to end the room for all.
+                    geminiService.endLiveVideoRoom(currentUser.id, roomId);
+                    
+                    // Now, clean up the host's session immediately and navigate away.
+                    localAudioTrack.current?.close();
+                    localVideoTrack.current?.close();
+                    await agoraClient.current?.leave();
+                } catch(error) {
+                    console.error("Error ending room as host:", error);
+                } finally {
+                    onGoBack(); // Go back immediately.
+                }
             }
         } else {
-            // Participant is leaving explicitly. Clean up and then navigate back.
+            // Participant is leaving explicitly.
             try {
                 localAudioTrack.current?.close();
                 localVideoTrack.current?.close();
@@ -259,29 +271,34 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
     const mainParticipant = useMemo(() => {
         return participants.find(p => p.id === mainViewParticipantId) || activeSpeaker || participants.find(p => p.id !== currentUser.id) || localParticipant;
     }, [participants, mainViewParticipantId, activeSpeaker, currentUser.id, localParticipant]);
-
-    const gridParticipants = useMemo(() => {
-      const otherParticipants = participants.filter(p => p.id !== mainParticipant?.id);
-      // On mobile, if local user is not main, they become the PiP, otherwise PiP is active speaker or first remote.
-      if (isMobile) {
-        if (mainParticipant?.id !== localParticipant?.id) {
-           return otherParticipants.filter(p => p.id !== localParticipant?.id);
-        } else {
-           const potentialPip = activeSpeaker && activeSpeaker.id !== mainParticipant.id ? activeSpeaker : otherParticipants[0];
-           return otherParticipants.filter(p => p.id !== potentialPip?.id);
-        }
-      }
-      return otherParticipants;
-    }, [participants, mainParticipant, isMobile, localParticipant, activeSpeaker]);
-
-    const pipParticipant = useMemo(() => {
-        if (!isMobile || !mainParticipant) return undefined;
-        if (mainParticipant.id !== localParticipant?.id) {
-            return localParticipant;
-        }
-        const otherParticipants = participants.filter(p => p.id !== mainParticipant.id);
-        return activeSpeaker && activeSpeaker.id !== mainParticipant.id ? activeSpeaker : otherParticipants[0];
-    }, [isMobile, participants, mainParticipant, localParticipant, activeSpeaker]);
+    
+    const smallParticipants = useMemo(() => {
+        return participants.filter(p => p.id !== mainParticipant?.id);
+    }, [participants, mainParticipant]);
+    
+    useEffect(() => {
+        setParticipantPositions(prev => {
+            const newPositions = { ...prev };
+            const containerWidth = mainContainerRef.current?.clientWidth || window.innerWidth;
+            const containerHeight = mainContainerRef.current?.clientHeight || window.innerHeight;
+            smallParticipants.forEach((p, index) => {
+                if (!newPositions[p.id]) {
+                    const yOffset = 16 + (index * (180 + 16)) % (containerHeight - 200);
+                    newPositions[p.id] = { 
+                        x: containerWidth - (isMobile ? 128 : 144) - 16, // 128px mobile, 144px desktop
+                        y: yOffset
+                    };
+                }
+            });
+            const currentIds = new Set(smallParticipants.map(p => p.id));
+            for (const id in newPositions) {
+                if (!currentIds.has(id)) {
+                    delete newPositions[id];
+                }
+            }
+            return newPositions;
+        });
+    }, [smallParticipants, isMobile]);
 
 
     // --- User Actions ---
@@ -290,60 +307,85 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
     const handleSendMessage = async (e: React.FormEvent) => { e.preventDefault(); const trimmed = newMessage.trim(); if (trimmed) { await geminiService.sendLiveVideoRoomMessage(roomId, currentUser, trimmed); setNewMessage(''); } };
     const handleMainViewDoubleClick = () => { if(mainParticipant && mainViewParticipantId) setMainViewParticipantId(null); };
 
-    // Drag handlers for PiP
-    const handleDragStart = (e: React.MouseEvent | React.TouchEvent) => { dragInfo.current = { ...dragInfo.current, isDragging: true, hasDragged: false }; const point = 'touches' in e ? e.touches[0] : e; dragInfo.current.startX = point.clientX - pipPosition.x; dragInfo.current.startY = point.clientY - pipPosition.y; };
-    const handleDragMove = (e: React.MouseEvent | React.TouchEvent) => { if (!dragInfo.current.isDragging) return; dragInfo.current.hasDragged = true; const point = 'touches' in e ? e.touches[0] : e; const containerRect = e.currentTarget.parentElement?.getBoundingClientRect(); if (!containerRect) return; let newX = point.clientX - dragInfo.current.startX; let newY = point.clientY - dragInfo.current.startY; newX = Math.max(8, Math.min(newX, containerRect.width - (pipRef.current?.clientWidth || 128) - 8)); newY = Math.max(8, Math.min(newY, containerRect.height - (pipRef.current?.clientHeight || 0) - 8)); setPipPosition({ x: newX, y: newY }); };
-    const handleDragEnd = () => { dragInfo.current.isDragging = false; };
+    // Drag handlers for small screens
+    const handleDragStart = (e: React.MouseEvent | React.TouchEvent, participantId: string) => {
+        e.stopPropagation();
+        const point = 'touches' in e ? e.touches[0] : e;
+        const initialPosition = participantPositions[participantId] || {x:0, y:0};
+        dragInfo.current = {
+            isDragging: true,
+            targetId: participantId,
+            startX: point.clientX - initialPosition.x,
+            startY: point.clientY - initialPosition.y,
+            hasDragged: false
+        };
+    };
+
+    const handleDragMove = (e: React.MouseEvent | React.TouchEvent) => {
+        if (!dragInfo.current.isDragging || !dragInfo.current.targetId) return;
+        dragInfo.current.hasDragged = true;
+        const point = 'touches' in e ? e.touches[0] : e;
+        const containerRect = mainContainerRef.current?.getBoundingClientRect();
+
+        if (!containerRect) return;
+
+        let newX = point.clientX - dragInfo.current.startX;
+        let newY = point.clientY - dragInfo.current.startY;
+        
+        const videoWidth = isMobile ? 112 : 128; // w-28 or w-32
+        const videoHeight = isMobile ? 176 : 208; // h-44 or h-52
+
+        newX = Math.max(8, Math.min(newX, containerRect.width - videoWidth - 8));
+        newY = Math.max(8, Math.min(newY, containerRect.height - videoHeight - 8));
+
+        setParticipantPositions(prev => ({
+            ...prev,
+            [dragInfo.current.targetId!]: { x: newX, y: newY }
+        }));
+    };
+
+    const handleDragEnd = () => {
+        if (!dragInfo.current.isDragging) return;
+        
+        if (!dragInfo.current.hasDragged && dragInfo.current.targetId) {
+            setMainViewParticipantId(dragInfo.current.targetId);
+        }
+        dragInfo.current.isDragging = false;
+        dragInfo.current.targetId = null;
+    };
     
     if (!room || !localParticipant) return <div className="h-full w-full flex items-center justify-center bg-black text-white">Connecting...</div>;
     
-    const layoutMode = isMobile ? 'mobile' : gridParticipants.length > 5 ? 'grid' : 'main-stage';
-
     return (
         <div className="h-full w-full flex flex-col md:flex-row bg-black text-white overflow-hidden">
             <main
+                ref={mainContainerRef}
                 className="flex-grow relative bg-black flex flex-col items-center justify-center"
                 onClick={() => setControlsVisible(v => !v)}
                 onMouseMove={handleDragMove} onMouseUp={handleDragEnd} onMouseLeave={handleDragEnd}
                 onTouchMove={handleDragMove} onTouchEnd={handleDragEnd}
             >
-                {layoutMode === 'grid' ? (
-                     <div className="w-full h-full grid grid-cols-3 grid-rows-3 gap-1 p-1">
-                        {[mainParticipant, ...gridParticipants].filter(Boolean).map(p => (
-                            <div key={p.id} onDoubleClick={() => setMainViewParticipantId(p.id === mainViewParticipantId ? null : p.id)} className="cursor-pointer">
-                                <ParticipantVideo participant={p} isLocal={p.id === currentUser.id} localVideoTrack={localVideoTrack.current} />
-                            </div>
-                        ))}
+                {mainParticipant && (
+                     <div className="w-full h-full flex items-center justify-center" onDoubleClick={handleMainViewDoubleClick}>
+                        <ParticipantVideo participant={mainParticipant} isLocal={mainParticipant.id === currentUser.id} localVideoTrack={localVideoTrack.current} isMainView />
                     </div>
-                ) : (
-                    <>
-                        {mainParticipant && (
-                             <div className="w-full h-full flex items-center justify-center" onDoubleClick={handleMainViewDoubleClick}>
-                                <ParticipantVideo participant={mainParticipant} isLocal={mainParticipant.id === currentUser.id} localVideoTrack={localVideoTrack.current} isMainView />
-                            </div>
-                        )}
-                        {pipParticipant && isMobile && (
-                            <div
-                                ref={pipRef}
-                                className="absolute w-28 h-44 md:w-32 md:h-52 bg-slate-800 rounded-lg overflow-hidden border-2 border-slate-600 cursor-pointer touch-none shadow-2xl z-20"
-                                style={{ top: `${pipPosition.y}px`, left: `${pipPosition.x}px` }}
-                                onMouseDown={handleDragStart} onTouchStart={handleDragStart}
-                                onDoubleClick={(e) => { e.stopPropagation(); setMainViewParticipantId(pipParticipant.id); }}
-                            >
-                                <ParticipantVideo participant={pipParticipant} isLocal={pipParticipant.id === currentUser.id} localVideoTrack={localVideoTrack.current} isPiP />
-                            </div>
-                        )}
-                        <div className={`absolute bottom-20 left-0 right-0 p-2 z-10 ${gridParticipants.length === 0 ? 'hidden' : ''}`}>
-                            <div className="flex justify-center gap-2 overflow-x-auto no-scrollbar">
-                               {gridParticipants.map(p => (
-                                    <div key={p.id} className="w-24 h-36 md:w-32 md:h-44 flex-shrink-0 cursor-pointer" onDoubleClick={() => setMainViewParticipantId(p.id)}>
-                                        <ParticipantVideo participant={p} isLocal={p.id === currentUser.id} localVideoTrack={localVideoTrack.current} />
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    </>
                 )}
+
+                {smallParticipants.map(p => (
+                    <div
+                        key={p.id}
+                        className="absolute w-28 h-44 md:w-32 md:h-52 bg-slate-800 rounded-lg overflow-hidden border-2 border-slate-600 cursor-grab touch-none shadow-2xl z-20 active:cursor-grabbing"
+                        style={{
+                            top: `${participantPositions[p.id]?.y || 16}px`,
+                            left: `${participantPositions[p.id]?.x || 16}px`,
+                            touchAction: 'none'
+                        }}
+                        onMouseDown={(e) => handleDragStart(e, p.id)}
+                        onTouchStart={(e) => handleDragStart(e, p.id)}
+                    >
+                        <ParticipantVideo participant={p} isLocal={p.id === currentUser.id} localVideoTrack={localVideoTrack.current} isPiP />
+                    </div>
+                ))}
                 
                 <div className={`absolute bottom-0 left-0 right-0 p-4 z-30 transition-all duration-300 ${controlsVisible ? 'animate-controls-fade-in' : 'animate-controls-fade-out pointer-events-none'}`}>
                     <div className="max-w-md mx-auto bg-black/50 backdrop-blur-md p-3 rounded-full flex items-center justify-center gap-4">
@@ -355,7 +397,7 @@ const LiveVideoRoomScreen: React.FC<LiveVideoRoomScreenProps> = ({ currentUser, 
                 </div>
             </main>
             
-            <aside className={`w-full md:w-80 flex-shrink-0 bg-black/60 backdrop-blur-sm border-l border-white/10 flex flex-col z-40 transition-transform duration-300 ${isChatOpen ? (isMobile ? 'fixed inset-0 translate-x-0 animate-slide-in-right' : 'animate-slide-in-right') : (isMobile ? 'fixed inset-0 translate-x-full animate-slide-out-right' : 'hidden')}`}>
+            <aside className={`w-full md:w-80 flex-shrink-0 bg-black/40 backdrop-blur-sm border-l border-white/10 flex flex-col z-40 transition-transform duration-300 ${isChatOpen ? (isMobile ? 'fixed inset-0 translate-x-0 animate-slide-in-right' : 'animate-slide-in-right') : (isMobile ? 'fixed inset-0 translate-x-full animate-slide-out-right' : 'hidden')}`}>
                  <header className="p-3 flex-shrink-0 flex items-center justify-between border-b border-slate-700">
                     <h2 className="font-bold text-lg">Live Chat</h2>
                     <button onClick={() => setIsChatOpen(false)} className="p-2 rounded-full hover:bg-slate-700"><Icon name="close" className="w-5 h-5"/></button>
